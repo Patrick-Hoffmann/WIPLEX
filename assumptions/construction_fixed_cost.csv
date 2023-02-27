@@ -1,0 +1,6 @@
+﻿hub height; rated power;
+;2 MW < P ≤ 3 MW   ;3 MW < P ≤ 4 MW
+hh ≤ 100 m;980 €/kW;990 €/kW 
+100 m < hh ≤ 120 m;1.160 €/kW;1.120 €/kW
+120 m < hh ≤ 140 m;1.280 €/kW;1.180 €/kW
+140 m < hh;1.380 €/kW;1.230 €/kW
