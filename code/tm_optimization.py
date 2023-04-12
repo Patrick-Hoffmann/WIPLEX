@@ -453,16 +453,16 @@ if __name__ == "__main__":
     damages = damages[["Lower", "Upper", "Average"] + list(t_types["Name"])]
 
 
-    gdf_in_sub = gdf_in.copy().iloc[:3000]
+    #gdf_in_sub = gdf_in.copy().iloc[:3000]
 
 
-    optimization_loop(gdf_in_sub, damages, t_types, cps, param["impact_range"], param["Scenario"], overwrite=param["overwrite"], 
+    optimization_loop(gdf_in, damages, t_types, cps, param["impact_range"], param["Scenario"], overwrite=param["overwrite"], 
         expansion_goals=param["expansion_scenarios"], out_dir=paths['results_file'], multiprocessing=param["multiprocessing"], 
         processes=param["num_workers"])
 
     # Generate a summary .xlsx file containing all Optimization results:
     
-    generate_optimization_output(gdf_in_sub, paths["output_folder"], paths["assumptions_file"], t_types, param["impact_range"], paths['results_file'])
+    generate_optimization_output(gdf_in, paths["output_folder"], paths["assumptions_file"], t_types, param["impact_range"], paths['results_file'])
 
 
     print('Finished script')
