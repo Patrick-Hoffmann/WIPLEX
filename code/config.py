@@ -213,7 +213,7 @@ class WIPLEX_settings:
 
         # Main Optimization parameters:
         # Define a list of expansion scenarios of interest (in MW)
-        self.param["expansion_scenarios"] = list(range(50, 300, 50)) # list(5000, 10000)
+        self.param["expansion_scenarios"] = list(range(100, 300, 50)) # list(5000, 10000)
 
         # State which externality damage calculations should be included 
         # (Existing: "jensen": Jensen et. al. 2014; "dk": Droes & Koster 2016; "noext": No externality case)

@@ -52,25 +52,27 @@ def wind_power_function(ws, radius, ad, cp):
     return (np.pi/2) * ws**3 * radius**2 * ad * cp * 1e-6
 
 
-def weibull_power_output(gdf, gwa_heights, cp_df, types_df):
+def weibull_power_output(gdf, cp_df, types_df):
     x = np.arange(3, 26, 1)
-    wb_A = gdf[[f"wb_A_{x}" for x in gwa_heights]].to_numpy()
-    wb_k = gdf[[f"wb_k_{x}" for x in gwa_heights]].to_numpy()
-    ad_array = gdf[[f"ad_{x}" for x in gwa_heights]].to_numpy()
+    wb_A = gdf[[f"wb_A_{x}" for x in list(t_types["Wind layer (m)"])]].to_numpy()
+    wb_k = gdf[[f"wb_k_{x}" for x in list(t_types["Wind layer (m)"])]].to_numpy()
+    ad_array = gdf[[f"ad_{x}" for x in list(t_types["Wind layer (m)"])]].to_numpy()
     blade_radius = types_df["Rotor diameter (m)"].to_numpy()/2
     
     array_list = []
     for ws in x:
         probs = weibull_wind_pdf(ws, wb_k, wb_A)
         cp_array = cp_df[cp_df["Wind Speed"] == ws].loc[:,cp_df.columns != 'Wind Speed'].to_numpy()
-        res = wind_power_function(ws, blade_radius, ad_array, cp_array) * probs
-        array_list.append(res)
+        res_wp = wind_power_function(ws, blade_radius, ad_array, cp_array) 
+        res_clipped = np.clip(res_wp, a_min=0, a_max=types_df["Rated power (MW)"].values) # clip results to not exceed rated power
+        res_out = res_clipped * probs # multiply with weibull probability
+        array_list.append(res_out)
     return np.array(array_list)
 
 
 # ----------------------------------------- Location Cost Functions ------------------------------------------ #
 
-def get_avg_property_value(gdf, impact_range):
+def aggregate_property_values(gdf, impact_range):
     '''
     Function calulates the aggregate property value of buildings in each impact zone for all cells in the gdf.
     Parameters
@@ -93,7 +95,7 @@ def get_avg_property_value(gdf, impact_range):
     
     return impacts_hp
 
-def calculate_location_costs(gdf, damage_df, t_types_df, impact_range, externality=True):
+def calculate_location_costs(gdf, damage_df, t_types_df, impact_range):
     '''
     Function for calculating location specific costs for each of the turbines in the dataset
     
@@ -107,8 +109,6 @@ def calculate_location_costs(gdf, damage_df, t_types_df, impact_range, externali
         DataFrame with information on each turbine used (name, height, rated power, ...)
     impact_range: list
         List containing all impact zones that should be used (maximum is the max number of impacts calculated)
-    externality: Bolean
-        Parameter indicating if wind power externalities should be considered (Default=True)
 
     Returns
     -------
@@ -120,16 +120,13 @@ def calculate_location_costs(gdf, damage_df, t_types_df, impact_range, externali
     prop_damages = damage_selection[list(t_types_df["Name"])].to_numpy()
 
     # Obtain house price values for each location
-    prop_values = get_avg_property_value(gdf, impact_range)/1000000
+    prop_values = aggregate_property_values(gdf, impact_range)/1000000
     
     # Caclulation of externalities:
-    if not externality:
-        ext_cost = np.zeros((len(gdf), len(t_types)))
-    else:
-        ext_cost = np.round(prop_values @ prop_damages, 2)
+    ext_cost = np.round(prop_values @ prop_damages, 2)
 
     # Calculation of construction costs:
-    const_cost = t_types["Total construction cost (million €)"].to_numpy().reshape(1,-1)
+    const_cost = t_types_df["Total construction cost (million €)"].to_numpy().reshape(1,-1)
 
     # Calc total costs:
     total_cost = ext_cost + const_cost
@@ -236,8 +233,8 @@ def run_optimization(expansion_goal, tot_cost_array, wpc_array, storage_dict):
         print(f'Finished optimization for expansion goal {expansion_goal}m!...solving time:', time.time() - start)
 
 
-def optimization_loop(gdf, damage_df, t_type_df, cp_df, impact_range, scenario, gwa_heights, 
-                      overwrite, expansion_goals, out_dir, multiprocessing=False):
+def optimization_loop(gdf, damage_df, t_type_df, cp_df, impact_range, scenario,
+                      overwrite, expansion_goals, out_dir, multiprocessing=False, processes=4):
     '''
     Main optimization loop to evaluate different expansion scenarios.
 
@@ -271,14 +268,13 @@ def optimization_loop(gdf, damage_df, t_type_df, cp_df, impact_range, scenario, 
     print("Started optimization process...")
   
     # Calculate Wind Power Capacity
-    wpc = weibull_power_output(gdf, gwa_heights, cp_df, t_type_df).sum(axis=0)
+    wpc = weibull_power_output(gdf, cp_df, t_type_df).sum(axis=0)
 
-    # Interpolate power Outputs using turbine height:
-    wpc = np.vstack([interpolate_heights(wpc, t_height) for t_height in list(t_type_df["Hub height (m)"])]).T
+    # # Interpolate power Outputs using turbine height:
+    # wpc = np.vstack([interpolate_heights(wpc, t_height) for t_height in list(t_type_df["Hub height (m)"])]).T
 
     # Calculate Location Specific Costs:
-    total_lsc, ext_lsc, const_lsc = calculate_location_costs(gdf, damage_df, t_type_df, impact_range, 
-                                                             externality=True)
+    total_lsc, ext_lsc, const_lsc = calculate_location_costs(gdf, damage_df, t_type_df, impact_range)
 
     
     if os.path.isfile(f'{out_dir}_{scenario}.pickle') and not overwrite:
@@ -291,11 +287,16 @@ def optimization_loop(gdf, damage_df, t_type_df, cp_df, impact_range, scenario, 
     if multiprocessing:
         manager = Manager()
         supply_fct = manager.dict(supply_fct)
-
-        p = Pool()                                   # Create a multiprocessing Pool
-        p.starmap(run_optimization, zip(expansion_goals, repeat(total_lsc), repeat(wpc), repeat(supply_fct)))
-        p.close()
-        p.join()
+        try:
+            p = Pool(processes=processes, initializer=init_worker)  # Create a multiprocessing Pool
+            p.starmap(run_optimization, zip(expansion_goals, repeat(total_lsc), repeat(wpc), repeat(supply_fct)))
+        except KeyboardInterrupt:
+            print('Keyboard interrupt detected, terminating processes...')
+            p.terminate()
+            p.join()
+        else:
+            p.close()
+            p.join()
 
     else:
         for i in expansion_goals:
@@ -335,7 +336,7 @@ def calc_other(turbines, expansion_goal, rated_power_array):
 
     return [rated_power_agg, flh] + list(turbine_count)
 
-def generate_results_df(geo_df, model, damage_df, t_type_df, impact_range, ext=True):
+def generate_results_df(geo_df, model, damage_df, t_type_df, impact_range):
     '''
     Function calculates the cost predictions for each expansion scenario of a given model using the optimization results.
 
@@ -362,8 +363,8 @@ def generate_results_df(geo_df, model, damage_df, t_type_df, impact_range, ext=T
 
     '''
     # Calculate Location Specific Costs:
-    total_lsc, ext_lsc, const_lsc = calculate_location_costs(geo_df, damage_df, t_type_df, impact_range, externality=True)
-    
+    total_lsc, ext_lsc, const_lsc = calculate_location_costs(geo_df, damage_df, t_type_df, impact_range)
+
     results = []
     for i in list(model.keys()):
         results.append([i] + calc_other(model[i], i, np.array([t_type_df["Rated power (MW)"]])) + calc_cost(model[i], 
@@ -374,7 +375,7 @@ def generate_results_df(geo_df, model, damage_df, t_type_df, impact_range, ext=T
 
     return results_df
 
-def generate_optimization_output(gdf_in, opt_file_dir, damage_df,t_type_df, impact_range, out_file):
+def generate_optimization_output(gdf_in, opt_file_dir, assumption_loc, t_type_df, impact_range, out_file):
     '''
     Function calculates cost predictions for each file in a given opt_file_dir and generates a .xlsx table containing all cost predictions
     in this directory.
@@ -401,19 +402,17 @@ def generate_optimization_output(gdf_in, opt_file_dir, damage_df,t_type_df, impa
         # Infer optimization settings from filename:
         filename_split = Path(file).stem.split('_')
         scenario = filename_split[-1]
-        
-        
-        if scenario == "noext":
-            externality = False
-        else:
-            externality = True
+
             
         # Load in optimized turbine location files:
         opt_result = pickle.load(open(file, "rb"))
         opt_result= dict(sorted(opt_result.items(), key=lambda item: item[0]))
+        
+        # load correct file with damage assumption:
+        damage_df = pd.read_excel(assumption_loc, sheet_name=scenario, skiprows=2)
+        damage_df = damage_df[["Lower", "Upper", "Average"] + list(t_type_df["Name"])]
 
-
-        opt_df = generate_results_df(gdf_in, opt_result, damage_df, t_type_df, impact_range, ext=externality)
+        opt_df = generate_results_df(gdf_in, opt_result, damage_df, t_type_df, impact_range)
         opt_df['Scenario'] = scenario
         opt_df['Externality Cost (€/kW rated)'] = opt_df['Externality Cost'] / opt_df['Expansion Goal (rated)'] *1e-3
         opt_df['Project Cost (€/kW rated)'] = opt_df['Project Cost'] / opt_df['Expansion Goal (rated)'] *1e-3
@@ -421,6 +420,7 @@ def generate_optimization_output(gdf_in, opt_file_dir, damage_df,t_type_df, impa
 
     df_out = pd.concat(df_list)
     df_out.to_excel(f'{out_file}.xlsx', index=False)
+
 
 #############################################################################################################
 #############################################################################################################
@@ -446,20 +446,26 @@ if __name__ == "__main__":
 
     # Power Coefficients
     cps = pd.read_excel(paths["assumptions_file"], sheet_name="Power_Coefficient", skiprows=3)
+    cps = cps[["Wind Speed"] + list(t_types.index)] #reorder cps in same order as available turbines (important for matrix calculation)
 
     # Load in damage assumption:
     damages = pd.read_excel(paths["assumptions_file"], sheet_name=param["Scenario"], skiprows=2)
+    damages = damages[["Lower", "Upper", "Average"] + list(t_types["Name"])]
 
 
-    gdf_in_sub = gdf_in.copy().iloc[:6000]
-    
+    gdf_in_sub = gdf_in.copy().iloc[:3000]
 
-    optimization_loop(gdf_in_sub, damages, t_types, cps, param["impact_range"], param["Scenario"], param["gwa_heights"], 
-                overwrite=param["overwrite"], expansion_goals=param["expansion_scenarios"], out_dir=paths['results_file'], multiprocessing=param["multiprocessing"])
+
+    optimization_loop(gdf_in_sub, damages, t_types, cps, param["impact_range"], param["Scenario"], overwrite=param["overwrite"], 
+        expansion_goals=param["expansion_scenarios"], out_dir=paths['results_file'], multiprocessing=param["multiprocessing"], 
+        processes=param["num_workers"])
 
     # Generate a summary .xlsx file containing all Optimization results:
     
-    generate_optimization_output(gdf_in_sub, paths["output_folder"], damages, t_types, param["impact_range"], paths['results_file'])
+    generate_optimization_output(gdf_in_sub, paths["output_folder"], paths["assumptions_file"], t_types, param["impact_range"], paths['results_file'])
 
 
     print('Finished script')
+
+
+
